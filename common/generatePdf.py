@@ -655,13 +655,13 @@ def generar_radar_pizza(player_info, temporada="2024-25", params=None, min_range
     
         # add text for nombre_jugador
     fig.text(
-        0.25, 0.95, f"{nombre_jugador}", size=14,  # Fija posición izquierda
+        0.26, 0.95, f"{nombre_jugador}", size=14,  # Fija posición izquierda
         fontproperties=font_bold.prop, color="white", ha="left"
     )
 
     # add text for nombre_liga
     fig.text(
-        0.65, 0.95, f"{nombre_liga}", size=14,  # Fija posición derecha
+        0.83, 0.95, f"{nombre_liga}", size=14,  # Fija posición derecha
         fontproperties=font_bold.prop, color="white", ha="right"
     )
 
@@ -1220,21 +1220,12 @@ def generar_pdf(link):
     # Generar el gráfico de radar
     values_liga= obtener_valores_liga (player_info, especifico_a_general,df_valores_jugadores_delanteros, df_valores_jugadores_centrocampistas, df_valores_jugadores_defensas, df_valores_gk )
     player_info = filtrar_metricas_por_rol(player_info, params_por_rol)
-    print(player_info)
+    
 
     # Verificar el resultado
     values_jugador= player_info['metricas_radar']['Per 90']
     values_jugador = values_jugador.tolist()
     params1= player_info['metricas_radar']['Statistic'].tolist()
-    
-    # Verifica los valores exactos en las listas
-    print("Valores de las listas:")
-    print(f"params1: {params1}")
-    print(f"values_jugador: {values_jugador}")
-    print(f"values_liga: {values_liga}")
-
-    # Verifica las longitudes justo antes de la comparación
-    print(f"Longitudes: params1: {len(params1)}, values_jugador: {len(values_jugador)}, values_liga: {len(values_liga)}")
 
 
     min_range, max_range= rangos_radar_pizza(values_jugador,values_liga,params1)
@@ -1254,7 +1245,7 @@ def generar_pdf(link):
     pdf.cell(200, 10, "FORTALEZAS:", ln=True)
     pdf.set_font("Arial", "", 12)
     pdf.set_text_color(255, 255, 255)  # Texto de fortalezas en blanco
-    print(fortalezas_info)
+    
     # Aquí se aplica el formato correcto de la lista
     for item in fortalezas_info:
         if ":" in item:
@@ -1278,7 +1269,7 @@ def generar_pdf(link):
     pdf.cell(200, 10, "DEBILIDADES:", ln=True)
     pdf.set_font("Arial", "", 12)
     pdf.set_text_color(255, 255, 255)  # Texto de debilidades en blanco
-    print(debilidades_info)
+    
     # Aquí se aplica el formato correcto de la lista para debilidades
     for item in debilidades_info:
         if ":" in item:
@@ -1305,13 +1296,14 @@ def generar_pdf(link):
     pdf.set_x(13)  # Mueve el cursor 15 unidades hacia la derecha
     pdf.multi_cell(0, 8, potencial_info)
 
+    pdf.add_page()
     # Jugadores Similares - Mantener texto en blanco
-    pdf.ln(30)
+    pdf.ln(3)
     pdf.set_font("Arial", "B", 14)
     pdf.set_text_color(255, 255, 255)  # Texto en blanco
     pdf.cell(200, 10, "JUGADORES SIMILARES:", ln=True, align="C")
     pdf.set_font("Arial", "", 12)
-    print(jugadores_similares_info)
+
     # Aquí se aplica el formato correcto de la lista para jugadores similares
     for item in jugadores_similares_info:
         if ":" in item:
