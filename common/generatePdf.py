@@ -6,7 +6,7 @@ import seaborn as sns
 from scipy import stats
 import tabulate
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup,Comment
 import re
 import ast
 import math
@@ -25,9 +25,8 @@ import os
 import tempfile
 import ollama
 from mplsoccer import PyPizza, add_image, FontManager, Radar, grid
-import LanusStats as ls
-fbref = ls.Fbref()
-
+import unicodedata
+import random
 
 #FUENTES PARA LOS PERCENTILES
 font_normal = FontManager('https://raw.githubusercontent.com/googlefonts/roboto/main/'
@@ -109,6 +108,14 @@ class PDF(FPDF):
         self.cell(title_width, 10, title, 0, 1, 'C')
         self.ln(5)  # Salto de línea adicional después del título
 
+def limpiar_texto(texto):
+    if texto:
+        # Normaliza y elimina caracteres especiales no compatibles
+        return ''.join(
+            c for c in unicodedata.normalize('NFKD', texto) 
+            if unicodedata.category(c) != 'Mn'
+        ).encode('latin-1', 'ignore').decode('latin-1')
+    return ""
 
 def extract_player_info(url):
         response = requests.get(url)
@@ -166,381 +173,409 @@ def extract_player_info(url):
                 player_info['Photo_URL'] = ""  # Si no hay <img> o no tiene 'src'
         else:
             player_info['Photo_URL'] = ""  # Si no hay div con la clase 'media-item'
-        
+
+        return player_info 
 
 
-        def extract_correct_scouting_report_url(url):
-                response = requests.get(url)
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.content, 'html.parser')
-
-                    argentina_league_link = soup.find('a', href=True, text='2024 Liga Profesional Argentina')
-
-                    if argentina_league_link:
-                        relative_url = argentina_league_link['href']
-                        full_url = urljoin(url, relative_url)
-                        return full_url
-
-                return None
-        # Extraer la URL del scouting report
-        scouting_report_url = extract_correct_scouting_report_url(url)
-        player_info['Report_URL_liga_argentina'] = scouting_report_url
-
-        # EXTRAER LOS MINUTOS JUGADOS DESDE EL SCOUTING REPORT
-        if scouting_report_url:
-            try:
-                # Realizar la solicitud para obtener el contenido del scouting report
-                report_response = requests.get(scouting_report_url)
-                if report_response.status_code == 200:
-                    report_soup = BeautifulSoup(report_response.text, 'html.parser')
-
-                    # Buscar el div con el estilo específico
-                    minutos = report_soup.find('div', style="max-width:500px")
-                    if minutos:
-                        strong_tag = minutos.find('strong')
-                        if strong_tag:
-                            player_info['Minutos_jugados_reporte'] = strong_tag.text.strip()
-                        else:
-                            player_info['Minutos_jugados_reporte'] = ""  # Si no encuentra <strong>, asigna vacío
-                    else:
-                        player_info['Minutos_jugados_reporte'] = ""  # Si no encuentra el div, asigna vacío
-                else:
-                    player_info['Minutos_jugados_reporte'] = "No se pudo acceder al reporte"
-            except Exception as e:
-                print(f"Error al extraer los minutos jugados desde el reporte: {e}")
-                player_info['Minutos_jugados_reporte'] = "Error al extraer minutos"
-
-        return player_info
-
-def obtener_datos_90(url):
-        datos_jugador=fbref.get_player_percentiles(url)
-        return datos_jugador
-
-def limpiar_nivel_df(df):
-        if isinstance(df.columns, pd.MultiIndex):
-            return df.droplevel(axis=1, level=0)
-        return df
-
-def procesar_tabla(df):
-            gk_stats = ['Touches','Goals Against', 'Save Percentage',  'PSxG/SoT', 'PSxG-GA', 'Crosses Stopped %']
-            other_stats = ['Non-Penalty Goals', 'Shots Total','Assists','Shot-Creating Actions',
-                        'Pass Completion %','Progressive Passes', 'Progressive Carries','Touches (Att Pen)', 
-                        'Tackles', 'Interceptions','Blocks', 'Aerials Won']
-            todas_las_stats = gk_stats + other_stats
-
-            mapeo_nombres = {
-                'Touches': "Toques",
-                'Goals Against':'Goles en contra',
-                'Save Percentage': '% Paradas',
-                'PSxG/SoT':'PSxG/SoT',
-                'PSxG-GA': 'PSxG-GA',        
-                'Crosses Stopped %':'% Cruces detenidos',
-                
-                'Non-Penalty Goals': 'Goles sin penalizacion',
-                'Shots Total': "Total tiros",
-                'Assists': "Asistencias",
-                'Shot-Creating Actions': "Acciones para la creación de tiros",
-                'Pass Completion %': '% Pases completados',
-                'Progressive Passes': 'Pases progresivos',
-                'Progressive Carries':'Acarreos progresivos',
-                'Touches (Att Pen)': "Toques (Ataq. pen.)",
-                'Tackles': "Derribos",
-                'Interceptions': "Intercepciones",
-                "Blocks": "Bloqueos",
-                "Aerials Won": "Duelos áreos ganados"
-            }
-
-            tabla_filtrada = df[df['Statistic'].isin(todas_las_stats)].copy()
-            tabla_filtrada['Statistic'] = tabla_filtrada['Statistic'].map(mapeo_nombres).fillna(tabla_filtrada['Statistic'])
-
-                    
-            # Limpiar y convertir la columna 'Per 90' (si hay valores con '%')
-            tabla_filtrada['Per 90'] = tabla_filtrada['Per 90'].replace('%', '', regex=True)  # Eliminar el símbolo '%'
-            tabla_filtrada['Per 90'] = pd.to_numeric(tabla_filtrada['Per 90'], errors='coerce')  # Convertir a numérico, NaN para valores no convertibles
-
-
-            return tabla_filtrada
-
-
-
-def obtener_indice_tabla_sp(url):
-        """
-        Función para determinar automáticamente el índice de la tabla a extraer según las opciones de filtrado.
-        Si hay filtros, se devuelve el índice 4, si no, se devuelve el índice 2.
-        """
-        response = requests.get(url)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Buscar los filtros disponibles en la página (asumimos que los filtros tienen la clase '.sr_preset')
-            filter_buttons = soup.select(".filter.switcher a.sr_preset")
-            # Mostrar cuántos filtros se han encontrado para depuración
-            print(f"Filtros encontrados: {len(filter_buttons)}")
-            
-            # Si hay más de un filtro, usamos el índice 4
-            if len(filter_buttons) > 3:
-                print("Hay más de 3 filtro, se usará el índice 4.")
-                return 2  # Seleccionamos la tabla con índice 4
-            else:
-                print("Hay solo 3 filtros, se usará el índice 2.")
-                return 1  # Seleccionamos la tabla con índice 2
-        else:
-            print(f"Error al cargar la página: {response.status_code}")
-            return None
-
-def extraer_similar_players(url):
-        """
-        Función para extraer la tabla correspondiente usando el índice detectado automáticamente.
-        """
-        # Determinar el índice de la tabla automáticamente
-        table_index = obtener_indice_tabla_sp(url)
-        
-        if table_index is not None:
-            # Extraer la tabla según el índice automáticamente
-            tables = pd.read_html(url)
-            
-            # Verificamos que la tabla seleccionada existe
-            if len(tables) > table_index:
-                return tables[table_index]
-            else:
-                print("No se encontró la tabla en el índice seleccionado.")
-                return None
-        else:
-            print("No se pudo determinar el índice de la tabla.")
-            return None
-
-
-    # Función principal para completar la información del jugador
-def get_player_with_stats(url):
-        # Extraer información básica del jugador
-        player_info = extract_player_info(url)
-
-        # Extraer tablas desde el scouting report URL
-        report_url = player_info.get('Report_URL_liga_argentina')
-        if report_url:
-            try:
-                # Procesar tabla de métricas
-                
-                datos_jugador= obtener_datos_90(player_info['Report_URL_liga_argentina'])
-                df_sin_nivel= limpiar_nivel_df(datos_jugador)
-                df_procesado= procesar_tabla(df_sin_nivel)
-                player_info['Tabla_metricas'] = df_procesado
-
-                # Extraer métricas y percentiles
-                player_info['Metricas'] = df_procesado['Statistic'].tolist()
-                player_info['Per 90'] = list(map(float, df_procesado['Per 90'].tolist()))
-            except Exception as e:
-                print(f"Error al procesar la tabla de métricas desde {report_url}: {e}")
-
-            try:
-                # Procesar tabla de jugadores similares
-                jugadores_similares = extraer_similar_players(report_url)
-                player_info['Similar_players'] = jugadores_similares
-            except Exception as e:
-                print(f"Error al procesar la tabla de jugadores similares desde {report_url}: {e}")
-
-        return player_info
-
-def extraccion_equipos_fbref(liga='Primera Division Argentina', año= '2024'):
-    df_teams= fbref.get_all_teams_season_stats('Primera Division Argentina', '2024', save_csv=False, stats_vs=False, change_columns_names=True, add_page_name=True)
-    return df_teams
-
-def filtrar_cambiar_nombres(df_teams):
-    # Filtrar las columnas deseadas
-    df= df_teams[['stats_Squad', 'stats_PlayingTime_90s',  'stats_PlayingTime_Min','stats_Performance_G-PK','shooting_Standard_Sh', 'stats_Performance_Ast','gca_SCA_SCA','passing_Total_Cmp%',
-                    'passing_PrgP', 'possession_Carries_PrgC', 'possession_Touches_AttPen','defense_Tackles_Tkl','defense_Int', 'defense_Blocks_Blocks', 'misc_AerialDuels_Won', 
-                    'keepersadv_Expected_PSxG+/-','keepersadv_Goals_GA','keepers_Performance_Save%' ,'keepersadv_Expected_PSxG/SoT','possession_Touches_Touches','keepersadv_Crosses_Stp%']]
-    # Diccionario para renombrar columnas
-    mapeo_columns= {
-        'stats_Squad': 'Equipo', 'stats_PlayingTime_90s': '90s',  
-        'stats_PlayingTime_Min':'Min','stats_Performance_G-PK': 'Goles sin penalizacion',
-        'shooting_Standard_Sh':'Total tiros', 'stats_Performance_Ast': 'Asistencias',
-        'gca_SCA_SCA': 'Acciones para la creación de tiros','passing_Total_Cmp%': '% Pases completados',
-        'passing_PrgP': 'Pases progresivos', 'possession_Carries_PrgC': 'Acarreos progresivos',
-        'possession_Touches_AttPen': 'Toques (Ataq. pen.)','defense_Tackles_Tkl': 'Derribos',
-        'defense_Int': 'Intercepciones',  'defense_Blocks_Blocks': 'Bloqueos', 'misc_AerialDuels_Won': 'Duelos áreos ganados',
-        'keepersadv_Expected_PSxG+/-':'PSxG-GA','keepersadv_Goals_GA':'Goles en contra','keepers_Performance_Save%': '% Paradas','keepersadv_Expected_PSxG/SoT': 'PSxG/SoT', 
-        'possession_Touches_Touches': 'Toques', 'keepersadv_Crosses_Stp%': '% Cruces detenidos'
-    }
-
-    # Renombrar las columnas usando el método `rename`
-    df_final = df.rename(columns=mapeo_columns)
-    return df_final
-
-def normalizar_columnas_90s (df_final):
-    # Lista de columnas que NO quieres convertir
-    columnas_excluidas = ['Equipo','Min', '% Pases completados', 'PSxG/SoT', '% Paradas', '% Cruces detenidos']
-
-    # Iterar sobre todas las columnas excepto las excluidas
-    for columna in df_final.columns:
-        if columna not in columnas_excluidas and columna != '90s':  # Asegúrate de no modificar la columna '90s'
-            # Convertir los valores de la columna a base de 90 minutos utilizando '90s'
-            df_final[columna] = (df_final[columna] / df_final['90s']).round(2)
-    return df_final
-
-def dataframe_medias(df_final):
-    df_copy= df_final.copy()
-    # Eliminar la columna 'Equipo' antes de obtener la media
-    df_sin_equipo = df_copy.drop(columns=['Equipo', '90s', 'Min'])
-
-    # Calcular la media de todas las columnas
-    media_columnas = df_sin_equipo.mean()
-
-    # Convertir la serie de medias a un DataFrame
-    df_media_columnas = media_columnas.to_frame().reset_index()
-
-    # Renombrar las columnas para tener nombres más legibles
-    df_media_columnas.columns = ['Columna', 'Media']
-
-    # Mostrar el DataFrame con las medias
-    return df_media_columnas.round(2)
-
-def dividir_medidas_jugadores(df_media_columnas):
-    # Seleccionar solo las primeras 11 columnas del DataFrame
-       #df_valores_jugadores_campo = df_medias_liga.iloc[:12, :]
-    
-    df_valores_jugadores_delanteros = df_medias_liga.iloc[:4, :]
-    df_valores_jugadores_centrocampistas = df_medias_liga.iloc[4:8, :]
-    df_valores_jugadores_defensas = df_medias_liga.iloc[8:12, :]
-    # Seleccionar solo las primeras 11 columnas del DataFrame
-    df_valores_gk = df_medias_liga.iloc[12:, :]
-    
-    return df_valores_jugadores_delanteros, df_valores_jugadores_centrocampistas, df_valores_jugadores_defensas, df_valores_gk
-
-df_teams= extraccion_equipos_fbref(liga='Primera Division Argentina', año= '2024')
-df_final= filtrar_cambiar_nombres(df_teams)
-df_final = normalizar_columnas_90s (df_final)
-df_medias_liga= dataframe_medias(df_final)
-df_valores_jugadores_delanteros, df_valores_jugadores_centrocampistas, df_valores_jugadores_defensas, df_valores_gk= dividir_medidas_jugadores(df_medias_liga)
-
-especifico_a_general = {
-    'GK': 'Porteros',
-
-    'DF': 'Defensas',
-    'DF (FB, right)':  'Defensas',
-     'DF (FB, left)': 'Defensas',
-     'DF-MF':  'Defensas',
-     'DF-MF (FB, left)':  'Defensas',
-     'DF-MF (FB, right)':  'Defensas',
-     'DF-MF (CB-FB, right)': 'Defensas' ,
-     'DF-MF (CB-FB, right)' :'Defensas' ,
-     'DF-MF (CB-DM)':'Defensas',
-     'DF (CB)':'Defensas',
-     'DF (CB, left)':'Defensas' ,
-     'DF (CB, right)':'Defensas' ,
-     'DF (CB-FB)':'Defensas',
-     'DF (CB-FB, right)': 'Defensas',
-     'DF (CB-FB, left)':'Defensas',
-     'DF-MF (FB-WM, right)':'Defensas',
-    'DF-MF (FB-WM, left)':'Defensas',
-    'DF-MF (DM)': 'Defensas',
-    'DF-MF (AM-CM-WM)': 'Defensas',
-    'DF-MF (CB)': 'Defensas',
-
-    'MF': 'Centrocampistas',
-    'MF (CM-WM)': 'Centrocampistas',
-    'MF (CM-DM)': 'Centrocampistas',
-    'DF-FW-MF (WM, right)':'Centrocampistas',
-    'DF-FW-MF (WM, left)':'Centrocampistas',
-    'MF (CM)':'Centrocampistas',
-    'MF (AM)':'Centrocampistas',
-    'MF (WM)':'Centrocampistas',
-    'MF (CM, right)':'Centrocampistas',
-    'MF (CM, left)':'Centrocampistas',
-    'MF (WM, right)':'Centrocampistas',
-    'MF (WM, left)':'Centrocampistas',
-    'MF (DM)':'Centrocampistas',
-    'MF (DM, left)':'Centrocampistas',
-    'MF (AM-CM-WM)':'Centrocampistas',
-    'MF (DM, right)':'Centrocampistas',
-    'MF (CM-DM, right)':'Centrocampistas',
-    'MF (CM-DM, left)':'Centrocampistas',
-    'MF (AM-CM-DM-WM)':'Centrocampistas',
-
-    'FW': 'Delanteros',
-    'FW-MF': 'Delanteros',
-    'DF-FW-MF (AM-WM)': 'Delanteros',
-    'FW-MF (AM-WM)':'Delanteros',
-    'FW-MF (AM)':'Delanteros',
-    'FW-MF (AM, left)': 'Delanteros',
-    'FW-MF (AM, right)':'Delanteros',
-    'FW-MF (WM)':'Delanteros',
-    'FW-MF (AM-CM-WM)':'Delanteros',
-    'FW-MF (AM-WM)': 'Delanteros',
-    'FW-MF (AM-WM, left)':'Delanteros',
-    'FW-MF (AM-WM, right)':'Delanteros',
-    'DF-FW-MF (CM-WM, left)': 'Delanteros'   
-
-}
-
-def obtener_valores_liga (player_info, especifico_a_general,df_valores_jugadores_delanteros, df_valores_jugadores_centrocampistas, df_valores_jugadores_defensas, df_valores_gk ):
-    # Asumiendo que player_info['Position'] tiene el valor que indica la posición del jugador.
-    posicion_especifica = player_info['Position']
-    rol_general = especifico_a_general.get(posicion_especifica, 'Desconocido')  # Usamos el diccionario
-    player_info['rol_general'] = rol_general
-
-    # Paso 3: Seleccionar dinámicamente el DataFrame según el rol general
-    if rol_general == 'Delanteros':
-        df_valores = df_valores_jugadores_delanteros
-    elif rol_general == 'Centrocampistas':
-        df_valores = df_valores_jugadores_centrocampistas
-    elif rol_general == 'Defensas':
-        df_valores = df_valores_jugadores_defensas
-    elif rol_general == 'Porteros':
-        df_valores = df_valores_gk
-    else:
-        # Si no se encuentra un rol válido, asigna un DataFrame vacío
-        df_valores = pd.DataFrame()
-
-    # Paso 4: Obtener la columna 'Media' del DataFrame correspondiente
-    if not df_valores.empty:
-        values_liga = df_valores['Media'].to_list()
-    else:
-        values_liga = None  # O manejarlo según tu necesidad
-    print(values_liga)
-    return values_liga
-
-# Parámetros específicos por rol
-params_por_rol = {
-        "Delanteros": ["Goles sin penalizacion", "Total tiros", "Asistencias", "Acciones para la creación de tiros"],
-        "Centrocampistas": ["% Pases completados", "Pases progresivos", "Acarreos progresivos", "Toques (Ataq. pen.)"],
-        "Defensas": ["Derribos", "Intercepciones", "Bloqueos", "Duelos áreos ganados"],
-        "Porteros": ['PSxG-GA','Goles en contra','% Paradas','PSxG/SoT', 'Toques', '% Cruces detenidos']
-
-    }
-
-def filtrar_metricas_por_rol(player_info, params_por_rol):
+# Nueva función para mostrar ligas disponibles
+def get_available_leagues():
     """
-    Filtra las métricas de la Tabla_metricas según el rol_general del jugador y las métricas relevantes definidas
-    en params_por_rol. Añade las métricas filtradas como 'metricas_radar' al diccionario del jugador.
-
-    Args:
-        player (dict): Diccionario que contiene los datos del jugador.
-        params_por_rol (dict): Diccionario que asocia roles generales con métricas específicas.
+    Devuelve las ligas disponibles y sus temporadas.
 
     Returns:
-        dict: Diccionario del jugador actualizado con las métricas filtradas.
+        dict: Diccionario de ligas y temporadas disponibles.
     """
-    # Obtener el rol general del jugador
-    rol = player_info.get('rol_general', None)
-
-    # Verificar que el rol está en params_por_rol
-    if rol not in params_por_rol:
-        print(f"El rol '{rol}' no está definido en params_por_rol. No se filtrarán métricas.")
-        player_info['metricas_radar'] = None
-        return 
     
-    # Obtener las métricas relevantes para el rol
-    metricas_relevantes = params_por_rol[rol]
+    possible_leagues = {
+        'Fbref': {
+            'Primera Division Argentina': {
+                'id': 21,
+                'slug': 'Primera-Division',
+                'seasons': ['2025','2024', '2023']
+            }
+        }}
 
-    # Filtrar la Tabla_metricas según las métricas relevantes
-    tabla_metricas = player_info.get('Tabla_metricas', pd.DataFrame())
-    metricas_filtradas = tabla_metricas[tabla_metricas['Statistic'].isin(metricas_relevantes)]
+    # Formatear datos de ligas y temporadas en un diccionario legible
+    available_leagues = {}
+    for league_name, league_data in possible_leagues['Fbref'].items():
+        available_leagues[league_name] = {
+            'id': league_data['id'],
+            'seasons': league_data['seasons']
+        } 
+    return available_leagues
 
-    # Guardar las métricas filtradas en el diccionario del jugador
-    player_info['metricas_radar'] = metricas_filtradas
+leagues = get_available_leagues()
 
-    return player_info
+# Diccionario de tablas disponibles (Big-5 como referencia, puedes expandirlo)
+TABLES = {
+    "players": {
+        "Standard Stats": "stats/players",
+        "Shooting": "shooting/players",
+        "Playing Time": "playingtime/players",
+        "Miscellaneous Stats": "misc/players",
+    },
+    "squads": {
+        "Standard Stats": "stats/squads",
+        "Shooting": "shooting/squads",
+        "Playing Time": "playingtime/squads",
+        "Miscellaneous Stats": "misc/squads",
+    }
+}
+
+# Función para generar URLs
+def generate_all_urls(TABLES):
+    """
+    Genera todas las combinaciones posibles de URLs para las estadísticas disponibles,
+    tanto para ligas individuales como para el Big-5, incluyendo temporadas específicas.
+
+    Returns:
+        dict: Un diccionario con las URLs organizadas por liga, temporada, y tipo de estadística.
+    """
+    # Obtener las ligas disponibles y sus temporadas
+    available_leagues = get_available_leagues()
+
+    # URL base
+    base_url = "https://fbref.com/en/comps/"
+
+    # Diccionario para almacenar las URLs generadas
+    urls = {}
+
+    # Iterar por las ligas y sus temporadas
+    for league_name, league_data in available_leagues.items():
+        league_id = league_data["id"]
+        league_urls = {}
+
+        for season in league_data["seasons"]:
+            season_urls = {"players": {}, "squads": {}}
+
+            # Generar URLs para jugadores (players)
+            for stat, path in TABLES['players'].items():
+                season_urls["players"][stat] = (
+                    f"{base_url}{league_id}/{path}/{season}/{league_name.replace(' ', '-')}-Stats"
+                )
+
+            # Generar URLs para equipos (squads)
+            for stat, path in TABLES['squads'].items():
+                season_urls["squads"][stat] = (
+                    f"{base_url}{league_id}/{path}/{season}/{league_name.replace(' ', '-')}-Stats"
+                )
+
+            # Añadir las URLs de esta temporada al diccionario de la liga
+            league_urls[season] = season_urls
+
+        # Añadir las URLs de la liga al diccionario principal
+        urls[league_name] = league_urls
+
+    return urls
+
+# Generar URLs
+all_urls = generate_all_urls(TABLES)
+
+def format_dataframe_columns(df, stat_category):
+    """
+    Reformatea las columnas de un DataFrame eliminando los niveles de índice,
+    añadiendo un sufijo basado en la estadística y asegurando nombres únicos.
+
+    Args:
+        df (pd.DataFrame): El DataFrame original con columnas multinivel o repetidas.
+        stat_category (str): La estadística que se añadirá como sufijo a las columnas.
+
+    Returns:
+        pd.DataFrame: El DataFrame con columnas reformateadas y sin duplicados.
+    """
+    # Si las columnas tienen un índice multinivel
+    if isinstance(df.columns, pd.MultiIndex):
+        # Convertir el índice multinivel a un solo nivel
+        df.columns = [f"{col[1]} ({col[0]} - {stat_category})" for col in df.columns]
+    else:
+        # Si no es multinivel, simplemente añade el sufijo de la estadística
+        df.columns = [f"{col} ({stat_category})" for col in df.columns]
+
+    # Asegurar nombres únicos en caso de duplicados
+    seen = {}
+    new_columns = []
+    
+    for col in df.columns:
+        if col in seen:
+            seen[col] += 1
+            new_columns.append(f"{col}_{seen[col]}")  # Agregar sufijo incremental
+        else:
+            seen[col] = 0
+            new_columns.append(col)
+
+    df.columns = new_columns  # Asignar los nuevos nombres únicos
+
+    return df
+
+
+def scrape_stats_player(league ='Primera Division Argentina', season= '2025',stat= 'Standard Stats',team_type="players"):
+    
+     # Accedemos al diccionario de URLs
+    league_data = all_urls[league]
+        
+    # Verificamos si la temporada existe en la liga
+    if season not in league_data:
+        raise ValueError(f"La temporada '{season}' no está disponible para la liga '{league}'.")
+        
+    # Determinamos el tipo de equipo según el team_type
+    if team_type == "teams":
+        if league == "Big 5 European Leagues":
+            team_type = "squads"
+        else:
+            team_type = "players"
+
+    # Accedemos a las URLs de la temporada
+    season_data = league_data[season]
+
+    # Verificamos si la estadística solicitada existe en el tipo de equipo
+    if stat not in season_data[team_type]:
+        raise ValueError(f"La estadística '{stat}' no está disponible para '{team_type}' en la liga '{league}'.")
+        
+    # Devolvemos la URL correspondiente
+    return season_data[team_type][stat]
+
+
+
+
+def extract_tables(league='Primera Division Argentina', season= '2025', stat='Standard Stats', team_type="players", save_excel=False):
+    """
+    Extrae las tablas de una página web dependiendo de si la URL contiene 'Big5' utilizando pandas.read_html.
+
+    Args:
+        league (str): Liga que se desea extraer (ejemplo: 'Big 5 European Leagues').
+        season (str): Temporada específica.
+        stat (str): Tipo de estadística.
+        team_type (str): Tipo de datos ('players', 'teams', etc.).
+
+    Returns:
+        list: Una lista de pandas DataFrames con las tablas extraídas.
+    """
+    # Obtener la URL usando la función `scrape_stats_player`
+    # Obtener la URL usando la función `scrape_stats_player`
+    try:
+        url = scrape_stats_player(league, season, stat, team_type)
+        print(f"URL generada: {url}")
+    except Exception as e:
+        print(f"Error al obtener la URL: {e}")
+        return []
+    
+    # Intentar leer las tablas visibles con pandas.read_html
+    try:
+        tables = pd.read_html(url)
+        
+        # Si la URL contiene "Big5", devolver solo la primera tabla
+        if "Big5" in url:
+            print(f"Starting to scrape player data for {stat} from FBREF...")
+            if tables:
+                table0 = tables[0].fillna(0)
+                # Reformatear las columnas del DataFrame
+                table0 = format_dataframe_columns(table0, stat)
+                table0 = table0[table0.iloc[:, 0] != 'Rk'].reset_index(drop=True)
+                # Filtrar columnas que no contengan 'matches' en su nombre
+                table0 = table0.loc[:, ~table0.columns.str.contains('matches', case=False)]
+                
+        
+                # Identificar la columna que contiene "Nation" y procesarla
+                for col in table0.columns[table0.columns.str.contains("Nation")]:
+                    table0[col] = table0[col].str.extract(r'([A-Z]+)$')
+                
+                # Identificar la columna que contiene "Age" y procesarla
+                for col in table0.columns[table0.columns.str.contains("Age")]:
+                    # Quedarnos solo con la parte antes del guion
+                    table0[col] = table0[col].str.split('-').str[0]  # Alternativa usando str.extract: table0[col] = table0[col].str.extract(r'(\d+)-')
+                
+                # Identificar la columna que contiene "Comp" y procesarla
+                for col in table0.columns[table0.columns.str.contains("Comp")]:
+                    # Quedarnos con la parte después del primer espacio
+                    table0[col]= table0[col].str.extract(r'\s(.+)')
+                return table0
+        else:
+            print("La URL no contiene 'Big5'. Se procederá con BeautifulSoup.")
+            print(f"Starting to scrape player data for {stat} from FBREF...")
+    except Exception as e:
+        print(f"Error al leer tablas con pandas.read_html: {e}")
+    
+    # Si no es Big5 o pandas.read_html falla, usar BeautifulSoup
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, "html.parser")
+        
+        # Extraer tablas dentro de comentarios
+        comment = soup.find_all(string=lambda t: isinstance(t, Comment))
+        comment_table = None
+        for comment_item in comment:
+            if '<div class="table_container"' in comment_item:
+                comment_table = comment_item
+                break
+        
+        if not comment_table:
+            raise ValueError("No se encontró ninguna tabla dentro de comentarios.")
+        
+        # Parsear el comentario como HTML y extraer la tabla
+        comment_html = BeautifulSoup(comment_table, 'html.parser')
+        table = comment_html.find('table')
+        if not table:
+            raise ValueError("No se encontró ninguna tabla en el HTML del comentario.")
+        
+        # Extraer cabeceras y datos
+        headings = [th.get_text() for th in table.find_all("th", scope="col")]
+        data = []
+        rows = table.find('tbody').find_all('tr')
+        for row in rows:
+            cols = [td.get_text(strip=True) for td in row.find_all(['th', 'td'])]
+            data.append(cols)
+        
+        # Crear el DataFrame
+        df_data = pd.DataFrame(data, columns=headings)
+
+    
+        df_data = df_data.fillna(0).reset_index(drop=True)
+        
+        # Si no es Big5, agregar columna 'Comp'
+        if league != 'Big 5 European Leagues':
+            df_data.insert(4, 'Comp', [league] * len(df_data))
+        
+                            
+        # Reformatear las columnas del DataFrame
+        df = format_dataframe_columns(df_data, stat)
+        df = df[df.iloc[:, 0] != 'Rk'].reset_index(drop=True)
+        # Filtrar columnas que no contengan 'matches' en su nombre
+        df = df.loc[:, ~df.columns.str.contains('matches', case=False)]
+        df = df.loc[:, ~df.columns.str.contains('Rk', case=False)]
+        
+        # Identificar la columna que contiene "Nation" y procesarla
+        for col in df.columns[df.columns.str.contains("Nation")]:
+            df[col] = df[col].str.extract(r'([A-Z]+)$')
+        
+        # Identificar la columna que contiene "Age" y procesarla
+        for col in df.columns[df.columns.str.contains("Age")]:
+            # Quedarnos solo con la parte antes del guion
+            df[col] = df[col].str.split('-').str[0]  # Alternativa usando str.extract: df[col] = df[col].str.extract(r'(\d+)-')
+
+        if save_excel:
+              df.to_excel(f'{league} - {season} - {stat} - player stats.xlsx')
+              
+        return df
+    except Exception as e:
+        print(f"Error al procesar la tabla con BeautifulSoup: {e}")
+
+def formatear_datos(df):
+    mapeo_columns= {
+    'Player (Standard Stats)':'Player',
+    'Nation (Standard Stats)':'Nacionalidad',
+    'Pos (Standard Stats)':'Posicion', 'Comp (Standard Stats)':'Competicion',
+    'Squad (Standard Stats)':'Equipo','Age (Standard Stats)':'Edad',
+    'Born (Standard Stats)':'Año', 'MP (Standard Stats)':'Partidos jugados',
+    'Starts (Standard Stats)':'Alineaciones', 'Min (Standard Stats)':'Minutos jugados',
+    '90s (Standard Stats)':'Minutos jugados/90',  'Gls (Standard Stats)':'Goles', 'Ast (Standard Stats)':'Asistencias',
+    'G+A (Standard Stats)':'Goles + Asistencias', 'G-PK (Standard Stats)': 'Goles sin penalización', 'PK (Standard Stats)':'Tiros penales ejecutados',
+    'PKatt (Standard Stats)':'Tiros penales intentados','CrdY (Standard Stats)':'Tarjetas amarillas',
+     'CrdR (Standard Stats)':'Tarjetas rojas', 'Gls (Standard Stats)_1':'Goles/90', 'Ast (Standard Stats)_1':'Asistencias/90',
+    'G+A (Standard Stats)_1':'Goles + Asistencias/90', 'G-PK (Standard Stats)_1':'Goles sin penalizacion/90',
+    'G+A-PK (Standard Stats)':'Goles + Asistencias sin penalizacion/90', 
+
+    'Player (Shooting)':'Player',
+    'Nation (Shooting)':'Nacionalidad', 'Pos (Shooting)':'Posicion',
+    'Comp (Shooting)':'Competicion', 'Squad (Shooting)': 'Equipo',  'Age (Shooting)':'Edad',
+    'Born (Shooting)':'Año','90s (Shooting)':'Minutos jugados/90',  'Gls (Shooting)':'Goles',  'Sh (Shooting)': 'Total de disparos',
+    'SoT (Shooting)':'Lanzamientos en el Objetivo', 'SoT% (Shooting)':'Lanzaminetos en el Objetivo %','Sh/90 (Shooting)':'Tiros totales/90',
+    'SoT/90 (Shooting)':'Tiros a puerta/90', 'G/Sh (Shooting)':'Goles/tiros', 'G/SoT (Shooting)': 'Gols/Disparo en el Objetivo',
+     'Dist (Shooting)':'Distancia media de disparo','PK (Shooting)':'Tiros penales ejecutados', 'PKatt (Shooting)':'Tiros penales intentados',
+ 
+    'Player (Miscellaneous Stats)':'Player','Nation (Miscellaneous Stats)':'Nacionalidad',
+    'Pos (Miscellaneous Stats)':'Posicion',  'Comp (Miscellaneous Stats)':'Competicion',
+    'Squad (Miscellaneous Stats)':'Equipo', 'Age (Miscellaneous Stats)':'Edad',
+'Born (Miscellaneous Stats)':'Año', '90s (Miscellaneous Stats)':'Minutos jugados/90',
+    'CrdY (Miscellaneous Stats)':'Tarjetas amarillas', 'CrdR (Miscellaneous Stats)':'Tarjetas rojas',
+    '2CrdY (Miscellaneous Stats)':'Segunda tarjeta amarilla', 'Fls (Miscellaneous Stats)':'Faltas cometidas',
+    'Fld (Miscellaneous Stats)':'Faltas recibidas','Off (Miscellaneous Stats)': 'Posicion adelantada',
+    'Crs (Miscellaneous Stats)': 'Pases cruzados', 'Int (Miscellaneous Stats)':'Intercepciones',
+    'TklW (Miscellaneous Stats)':'Derribos conseguidos', 'PKwon (Miscellaneous Stats)':'Penaltis ejecutados',
+   'PKcon (Miscellaneous Stats)':'Penaltis concedidos', 'OG (Miscellaneous Stats)':'Goles en propia',
+       
+        }
+    df_cambio = df.rename(columns=mapeo_columns)
+    df_cambio = df_cambio.loc[:, ~df_cambio.columns.duplicated(keep='first')]
+    df_cambio["Nacionalidad"] = (df_cambio[["Nacionalidad"]].squeeze().astype(str).str.extract(r'([A-Z]{3})$')[0])
+
+    df_cambio["Edad"] = (df_cambio[["Edad"]].squeeze().astype(str).str.split('-').str[0])
+
+    return df_cambio
+
+def all_stats_player(stat= ['Standard Stats','Shooting','Miscellaneous Stats'], league= 'Primera Division Argentina',season= '2025',add_page_name=True):
+
+    df_stats =extract_tables(league='Primera Division Argentina', season= '2025', stat='Standard Stats', team_type="players", save_excel=False)
+    time.sleep(random.uniform(2, 5))
+
+    df_shooting =extract_tables(league='Primera Division Argentina', season= '2025', stat='Shooting', team_type="players", save_excel=False)
+    time.sleep(random.uniform(2, 5))
+
+    df_misc =extract_tables(league='Primera Division Argentina', season= '2025', stat='Miscellaneous Stats', team_type="players", save_excel=False)
+    time.sleep(random.uniform(2, 5))
+
+
+    df_general_final= pd.concat([df_stats, df_shooting, df_misc], axis=1)
+
+    df_general_final=df_general_final.fillna(0)
+    df_general_jugadores_final= formatear_datos(df_general_final)
+    return df_general_jugadores_final
+    
+df_general_jugadores_final= all_stats_player(stat= ['Standard Stats','Shooting','Miscellaneous Stats'], league= 'Primera Division Argentina', season= '2025',add_page_name=True)
+    
+
+def df_jugadores_interes(df):
+    columnas_interes_jugadores= ['Player', 'Nacionalidad', 'Posicion', 'Equipo', 'Competicion', 'Edad', 'Año', 'Minutos jugados', 'Minutos jugados/90', 'Partidos jugados',
+                              'Alineaciones','Goles/90', 'Asistencias/90','Goles + Asistencias sin penalizacion/90', 'Derribos conseguidos', 
+                                'Intercepciones','Tiros totales/90', 'Tiros a puerta/90', 'Goles/tiros']
+
+    df_jugadores_final = df_general_jugadores_final[columnas_interes_jugadores]
+    return df_jugadores_final
+
+df_jugadores_final= df_jugadores_interes(df_general_jugadores_final)
+
+def transformacion_90(df):
+    df["Derribos conseguidos"] = pd.to_numeric(df["Derribos conseguidos"], errors="coerce")
+    df["Intercepciones"] = pd.to_numeric(df["Intercepciones"], errors="coerce")
+    df["Minutos jugados/90"] = pd.to_numeric(df["Minutos jugados/90"], errors="coerce")
+
+    # Asegúrate de que no haya valores nulos o ceros en 'Minutos jugados/90' para evitar divisiones por cero
+    df["Derribos conseguidos/90"] = df["Derribos conseguidos"] / df["Minutos jugados/90"]
+    df["Intercepciones/90"] = df["Intercepciones"] / df["Minutos jugados/90"]
+
+    df["Derribos conseguidos/90"] = df["Derribos conseguidos/90"].round(2)
+    df["Intercepciones/90"] = df["Intercepciones/90"].round(2)
+
+    df = df.drop(columns= ['Derribos conseguidos', 'Intercepciones'] )
+    df= df.fillna(0)
+    df = df.replace(r'^\s*$', 0, regex=True)  # Reemplaza espacios vacíos con 0
+    return df
+
+df_jugadores_final= transformacion_90(df_jugadores_final)
+
+def creacion_valores_liga(df):
+    df_jugadores_90_sincolumnas = df.drop(columns=['Player','Nacionalidad',	'Posicion','Equipo','Competicion','Edad','Año','Minutos jugados','Minutos jugados/90'])
+    df_jugadores_90_sincolumnas = df_jugadores_90_sincolumnas.apply(pd.to_numeric, errors="coerce")
+    media_columnas = df_jugadores_90_sincolumnas.mean()
+    df_media_columnas_jugadores = media_columnas.to_frame().reset_index()
+    df_media_columnas_jugadores.columns = ['Estadistica', 'Media']
+    df_media_columnas_jugadores= df_media_columnas_jugadores.round(2)
+    return df_media_columnas_jugadores
+df_media_columnas_jugadores = creacion_valores_liga(df_jugadores_final)
+
+
+
+def obtener_df_jugador_interes(player_info):
+    fila_jugador = df_jugadores_final.loc[df_jugadores_final['Player']== player_info['Player']].reset_index(drop=True)
+
+    return fila_jugador
+
+
+def extraer_variables_radar(player_info):
+    params= player_info['Tabla metricas'].Estadística.to_list()
+    values_jugador= player_info['Tabla metricas']['Por 90'].to_list()
+    values_jugador = pd.to_numeric(values_jugador, errors="coerce")
+    return params, values_jugador
 
 
 
@@ -624,7 +659,7 @@ def generar_radar_pizza(player_info, temporada="2024-25", params=None, min_range
             fontproperties=font_normal.prop, va="center"
         ),                          # values to be used when adding parameter
         kwargs_values=dict(
-            color="#000000", fontsize=10,
+            color="#000000", fontsize=8,
             fontproperties=font_normal.prop, zorder=2,
             bbox=dict(
                 edgecolor="#000000", facecolor="#1A78CF",
@@ -632,7 +667,7 @@ def generar_radar_pizza(player_info, temporada="2024-25", params=None, min_range
             )
         ),                           # values to be used when adding parameter-values
         kwargs_compare_values=dict(
-            color="#000000", fontsize=10,
+            color="#000000", fontsize=8,
             fontproperties=font_normal.prop, zorder=2,
             bbox=dict(
                 edgecolor="#000000", facecolor="#FF9300",
@@ -648,7 +683,7 @@ def generar_radar_pizza(player_info, temporada="2024-25", params=None, min_range
     # add subtitle
     fig.text(
             0.515, 0.99,
-            f"Estadísticas 90s vs Liga Profesional Argentina ({player_info['rol_general']}) \nBasado en {player_info['Minutos_jugados_reporte']} jugados | Temporada: {temporada}",
+            f"Estadísticas 90s vs Liga Profesional Argentina\nBasado en {player_info['Minutos totales jugados liga']} minutos jugados | Temporada: {temporada}",
             size=15,
             ha="center", fontproperties=font_bold.prop, color="#F2F2F2"
         )
@@ -712,32 +747,25 @@ def generar_y_procesar_informe(player_info, modelo="llama3:8b"):
         prompt_final = f"""
         Actúa como un scout de fútbol profesional con experiencia técnica y táctica.
         Necesito que crees un informe detallado sobre {player_info['Player']}, un jugador de {player_info['Position']} de {player_info['Age']} años que juega en {player_info['Team']}.
-        Las secciones del informe serán: Resumen, Fortalezas, Debilidades, Potencial y Jugadores Similares.
-        Basado en las estadísticas avanzadas de la tabla {player_info['Tabla_metricas'].to_markdown()} y los datos de todos los demás jugadores similares en {player_info['Similar_players'].to_markdown()},
+        Las secciones del informe serán: Resumen, Fortalezas, Debilidades y potencial.
+        Basado en las estadísticas avanzadas de la tabla {player_info['Tabla metricas'].to_markdown()} y los datos de las medias de la liga en {player_info['Valores_media_liga'].to_markdown()},
         proporciona el informe con el siguiente formato:
 
         **Resumen**: Descripción breve del estilo de juego de {player_info['Player']} y su impacto en el campo.
 
-        **Fortalezas**: En cada fortaleza añade la estadistica del per 90 y el percentil correspondiente. Siempre nombra una lista de 4 fortalezas.
+        **Fortalezas**: En cada fortaleza añade la estadistica del per 90 y la media de la liga (Media liga:x). Siempre nombra una lista de 4 fortalezas y su descripción.
         - Fortaleza 1
         - Fortaleza 2
         - Fortaleza 3
         - Fortaleza 4
 
-        **Debilidades**: En cada debilidad añade la estadistica del per 90 y el percentil correspondiente. Siempre nombra una lista de 4 debilidades.
+        **Debilidades**: En cada debilidad añade la estadistica del per 90 y la media de la liga, ponerlo en formato (Media liga:x). Siempre nombra una lista de 4 debilidades y su descripción.
         - Debilidad 1
         - Debilidad 2
         - Debilidad 3
         - Debilidad 4
 
-        **Potencial**: Evaluación del potencial de desarrollo y áreas de mejora.
-
-        **Jugadores Similares**:
-        - Jugador 1: Descripción y equipo
-        - Jugador 2: Descripción y equipo
-        - Jugador 3: Descripción y equipo
-        - Jugador 4: Descripción y equipo
-        - Jugador 5: Descripción y equipo
+        **Potencial**: Evaluación del potencial de desarrollo y áreas de mejora en 3 lineas.
         """
 
         # Llamada al modelo de Ollama
@@ -751,8 +779,7 @@ def generar_y_procesar_informe(player_info, modelo="llama3:8b"):
             "Resumen": "",
             "Fortalezas": [],
             "Debilidades": [],
-            "Potencial": "",
-            "Jugadores Similares": []
+            "Potencial": ""
         }
         
         # Expresiones regulares para las secciones "Resumen" y "Potencial"
@@ -760,18 +787,18 @@ def generar_y_procesar_informe(player_info, modelo="llama3:8b"):
             "Resumen": r"\*\*Resumen\*\*:(.*?)(?=\*\*|$)",  # Captura todo después de **Resumen** hasta el siguiente encabezado
             "Potencial": r"\*\*Potencial\*\*:(.*?)(?=\*\*|$)"
         }
-        
         # Extraer las secciones "Resumen" y "Potencial" usando regex
         for seccion, regex in secciones_regex.items():
             resultado = re.search(regex, contenido, re.DOTALL)  # .DOTALL permite que el punto capture saltos de línea
             if resultado:
                 partes[seccion] = resultado.group(1).strip()  # Extraer y limpiar el contenido
-        
+                
         # Función auxiliar para extraer listas (Fortalezas, Debilidades y Jugadores Similares)
         def extraer_lista(texto):
-            items = re.findall(r"\* (.*?)\n", texto)  # Captura el texto después del asterisco y hasta el salto de línea
-            return [item.strip() for item in items]  # Limpiar los elementos de la lista
-
+            # Mejorar la captura para las listas numeradas
+            items = re.findall(r"[\*\-]\s(.*?)(?=\n|$)", texto)  # Captura cualquier punto con * o - seguido de texto
+            return [item.strip() for item in items if item.strip()]
+        
         # Procesar las fortalezas, debilidades y jugadores similares
         if "**Fortalezas**" in contenido:
             fortalezas_texto = contenido.split("**Fortalezas**")[1].split("**Debilidades**")[0]
@@ -781,381 +808,25 @@ def generar_y_procesar_informe(player_info, modelo="llama3:8b"):
             debilidades_texto = contenido.split("**Debilidades**")[1].split("**Potencial**")[0]
             partes["Debilidades"] = extraer_lista(debilidades_texto)
 
-        if "**Jugadores Similares**" in contenido:
-            jugadores_similares_texto = contenido.split("**Jugadores Similares**")[1]
-            partes["Jugadores Similares"] = extraer_lista(jugadores_similares_texto)
-        
         # Si alguna sección está vacía, colocar un mensaje predeterminado
-        for seccion in ["Resumen", "Potencial"]:
+        for seccion in ["Fortalezas", "Debilidades"]:
             if not partes[seccion]:
-                partes[seccion] = "Información no proporcionada."
-        
+                partes[seccion] = ["No se han proporcionado datos."]
+
         # Aquí ya tienes todo procesado. Puedes desestructurarlo
         resumen_info = partes["Resumen"]
         fortalezas_info = partes["Fortalezas"]
         debilidades_info = partes["Debilidades"]
         potencial_info = partes["Potencial"]
-        jugadores_similares_info = partes["Jugadores Similares"]
+    
 
         # Si necesitas devolver el diccionario completo, lo puedes hacer
-        return resumen_info ,fortalezas_info , debilidades_info, potencial_info,jugadores_similares_info
+        return resumen_info ,fortalezas_info , debilidades_info, potencial_info
 
-# Función para filtrar jugadores según la información dada
-def filtrar_jugadores(df, jugadores_similares_info, jugador_principal):
-        """
-        Filtra jugadores basado en nombres y asegura que el jugador principal esté incluido.
-        """
-        # Si jugadores_similares_info es una lista, extraer los nombres de los jugadores
-        nombres_jugadores = []
-        if isinstance(jugadores_similares_info, list):
-            for descripcion in jugadores_similares_info:
-                # Buscar nombres entre los asteriscos (por ejemplo, **Sebastián Villa**)
-                nombres = re.findall(r'\*\*(.*?)\*\*', descripcion)
-                if nombres:  # Si se encontraron nombres
-                    nombres_jugadores.extend(nombres)
-
-        # Asegurarse de que el jugador principal esté en la lista de nombres
-        if jugador_principal not in nombres_jugadores:
-            nombres_jugadores.append(jugador_principal)
-
-        # Filtrar el DataFrame por los nombres de los jugadores
-        return df[df['Player'].isin(nombres_jugadores)].drop_duplicates('Player')
-
-    # Función para procesar las columnas del DataFrame
-def procesar_columnas(df, columnas_base, stats_plot):
-        """
-        Procesa un DataFrame con las siguientes operaciones:
-        1. Filtra las columnas de interés.
-        2. Elimina columnas duplicadas.
-        3. Convierte las columnas de porcentaje a números decimales.
-        4. Elimina el símbolo '+' y convierte las columnas con valores de tipo +/- a float.
-        """
-        # Filtrar columnas de interés
-        columnas_interes = columnas_base + stats_plot["Statistic"]
-        df5 = df[columnas_interes]
-        
-        # Eliminar las primeras columnas y resetear el índice
-        df6 = df5[columnas_interes[2:]].reset_index(drop=True)
-        
-        # Eliminar columnas duplicadas
-        df_procesado = df6.loc[:, ~df6.columns.duplicated()]
-        
-        # Eliminar el símbolo '%' y convertir las columnas de porcentaje a números decimales
-        if 'keepers_Save%' in df_procesado.columns:
-            df_procesado['keepers_Save%'] = df_procesado['keepers_Save%'].str.replace('%', '')
-        if 'keepersadv_Stp%' in df_procesado.columns:
-            df_procesado['keepersadv_Stp%'] = df_procesado['keepersadv_Stp%'].str.replace('%', '')
-        
-        # Eliminar el signo '+' y convertir la columna 'keepersadv_PSxG+/-' a float
-        if 'keepersadv_PSxG+/-' in df_procesado.columns:
-            df_procesado['keepersadv_PSxG+/-'] = df_procesado['keepersadv_PSxG+/-'].str.replace('+', '').astype(float)
-        
-        return df_procesado
-
-    # Función para normalizar las estadísticas
-def normalizar_por_90s(df, normalize_column, exclude_columns):
-        """
-        Normaliza columnas de un DataFrame dividiéndolas por una columna específica, excluyendo otras,
-        y redondea los valores resultantes a dos decimales.
-
-        Args:
-            df (pd.DataFrame): El DataFrame de entrada.
-            normalize_column (str): La columna por la que se normalizarán los valores.
-            exclude_columns (list): Lista de columnas a excluir del proceso.
-
-        Returns:
-            pd.DataFrame: El DataFrame con las columnas normalizadas y redondeadas a 2 decimales.
-        """
-        # Copiar el DataFrame para evitar modificar el original
-        df_normalized = df.copy()
-        
-        # Asegurarse de que la columna de normalización sea numérica
-        df_normalized[normalize_column] = pd.to_numeric(df_normalized[normalize_column], errors='coerce')
-        
-        # Verificar si hay valores nulos en la columna de normalización
-        if df_normalized[normalize_column].isnull().any():
-            raise ValueError(f"La columna '{normalize_column}' contiene valores nulos o no numéricos.")
-        
-        # Seleccionar columnas que se normalizarán (excluir las especificadas)
-        columns_to_normalize = [col for col in df_normalized.columns if col not in exclude_columns + [normalize_column]]
-        
-        # Normalizar las columnas seleccionadas y redondear a 2 decimales
-        for col in columns_to_normalize:
-            # Convertir la columna a numérica si no lo es
-            df_normalized[col] = pd.to_numeric(df_normalized[col], errors='coerce')
-
-            # Aplicar la normalización y redondear
-            df_normalized[col] = (df_normalized[col] / df_normalized[normalize_column]).round(2)
-        
-        return df_normalized
-
-    # Función para ejecutar todo el flujo completo, dependiendo de si es portero o no
-def flujo_completo(liga, año, jugadores_similares_info, jugador_principal, player_data):
-        """
-        Ejecuta todo el flujo dependiendo de si el jugador es un portero o un jugador de campo.
-        """
-        # Detectar automáticamente si el jugador es portero
-        is_gk = player_data.get("Position") == "GK"
-        
-        # Scraping dependiendo de la posición del jugador (GK o jugador de campo)
-        if is_gk:
-            print(f"El jugador {jugador_principal} es portero. Procesando estadísticas de portero...")
-            df_players = fbref.get_all_player_season_stats(liga, año)[1]  # Índice 1 para porteros
-            stats_plot = {
-                "Statistic": [
-                    "keepersadv_PSxG+/-", "keepers_GA", "keepers_Save%", "keepersadv_Stp%",
-                    "keepersadv_PSxG/SoT"
-                ]
-            }
-            stats_labels = {
-                "keepersadv_PSxG+/-": "PSxG-GA",
-                "keepers_GA": "Goles encajados",
-                "keepers_Save%": '% Paradas', "keepersadv_Stp%": '% Centros detenidos',
-                "keepersadv_PSxG/SoT": "PSxG/SoT",
-            }
-            # Columnas base específicas para porteros
-            columnas_base = ['Player', 'keepers_Squad', 'keepers_90s']
-            
-        else:
-            print(f"El jugador {jugador_principal} NO es portero. Procesando estadísticas de jugador de campo...")
-            df_players = fbref.get_all_player_season_stats(liga, año)[0]  # Índice 0 para jugadores de campo
-            stats_plot = {
-                "Statistic": [
-                    "passing_CrsPA", "gca_GCA90", "defense_Mid 3rd", "defense_Sh", "defense_Int",
-                    "possession_Touches", "possession_Att Pen", "possession_CPA", "misc_Recov"
-                ]
-            }
-            stats_labels = {
-                "passing_CrsPA": "Centros al área de penalti",
-                "gca_GCA90": "Acciones creadas de gol",
-                "defense_Mid 3rd": "Entradas (mid 3rd)",
-                "defense_Sh": "Tiros bloqueados",
-                "defense_Int": "Intercepciones",
-                "possession_Touches": "Toques",
-                "possession_Att Pen": "Toques intentados área de penalti",
-                "possession_CPA": "Progresiones al área rival",
-                "misc_Recov": "Recuperaciones"
-            }
-            # Columnas base específicas para jugadores de campo
-            columnas_base = ['Player', 'stats_Squad', 'stats_90s']
-        
-        # Columnas de interés
-        columnas_interes = columnas_base + stats_plot["Statistic"]
-        
-        # Validar scraping
-        if df_players.empty:
-            raise ValueError(f"No se obtuvieron datos de la liga '{liga}' y el año '{año}'. Verifica el scraping.")
-        
-    
-        # Validar si las columnas base existen en el DataFrame
-        columnas_base_faltantes = [col for col in columnas_base if col not in df_players.columns]
-        if columnas_base_faltantes:
-            raise ValueError(f"Las columnas base faltantes en el DataFrame son: {columnas_base_faltantes}")
-        
-        # Filtrar jugadores
-        df_filtrado = filtrar_jugadores(df_players, jugadores_similares_info, jugador_principal)
-        
-        # Verificar si hay datos tras el filtrado
-        if df_filtrado.empty:
-            raise ValueError(f"No se encontraron datos para el jugador '{jugador_principal}' en el DataFrame.")
-        
-        # Procesar estadísticas
-        df_procesado = procesar_columnas(df_filtrado, columnas_base, stats_plot)
-        
-        # Normalizar estadísticas por 'stats_90s' o 'keepers_90s' dependiendo de si es portero
-        normalize_column = 'keepers_90s' if is_gk else 'stats_90s'
-        df_normalizado = normalizar_por_90s(
-            df_procesado,
-            normalize_column=normalize_column,
-            exclude_columns=["keepersadv_PSxG/SoT", "keepers_Save%", "keepersadv_Stp%","gca_GCA90"]
-        )
-        
-        # Renombrar columnas con las etiquetas
-        df_final = df_normalizado.rename(columns=stats_labels)
-        # Asegurarse de que ambos DataFrames tienen el mismo índice
-        df_filtrado = df_filtrado.reset_index(drop=True)
-
-        # Agregar las columnas 'Player' y 'Team' al final del DataFrame final
-        df_final['Player'] = df_filtrado['Player'].values
-        # Usar 'keepers_Squad' si es un portero, sino usar 'stats_Squad'
-        df_final['stats_Squad'] = df_filtrado['keepers_Squad'].values if is_gk else df_filtrado['stats_Squad'].values
-
-        # Convertir 'Player' y 'stats_Squad' a tipo string
-        df_final['Player'] = df_final['Player'].astype(str)
-        df_final['stats_Squad'] = df_final['stats_Squad'].astype(str)
-
-        columnas_a_convertir = [col for col in df_final.columns if col not in ['Player', 'stats_Squad']]
-        
-        # Convertir las columnas seleccionadas a valores numéricos, forzando NaN para errores
-        for col in columnas_a_convertir:
-            df_final[col] = pd.to_numeric(df_final[col], errors='coerce')
-
-        columnas_actuales= df_final.columns.tolist()
-        # Reordenamos las columnas para que 'Player' y 'stats_Squad' estén al principio
-        nuevas_columnas = ['Player', 'stats_Squad'] + [col for col in columnas_actuales if col not in ['Player', 'stats_Squad']]
-        # Aplicamos el nuevo orden al DataFrame
-        df_final = df_final[nuevas_columnas]
-        return df_final
-   
-
-def configurar_jugadores_y_valores(df, columnas_valores_inicio=3, player_data=  {"Position": "GK"}):
-        """Extrae jugadores, equipos, valores, y define parámetros del radar."""
-        # Definir los parámetros del radar según la posición del jugador (portero o jugador de campo)
-        # Detectar automáticamente si el jugador es portero
-        es_portero = player_data.get("Position") == "GK"
-        if es_portero:
-            params = [
-                "PSxG-GA", "Goles encajados", "% Paradas", "% Centros detenidos", "PSxG/SoT"
-            ]
-        else:
-            params = [
-                "Centros al área de penalti", "Acciones creadas de gol", "Entradas (mid 3rd)", 
-                "Tiros bloqueados", "Intercepciones", "Toques", "Toques intentados área de penalti",  
-                "Progresiones al área rival", "Recuperaciones"
-            ]
-        jugadores = df['Player'].tolist()   
-        equipos = df['stats_Squad'].tolist()
-        
-        jugadores_valores = {row['Player']: row[columnas_valores_inicio:].tolist() for _, row in df.iterrows()}
-        
-        low1 = df.iloc[:, columnas_valores_inicio:].min().apply(np.floor) - 5
-        
-        high1 = df.iloc[:, columnas_valores_inicio:].max().apply(np.ceil) + 1
-        
-        radar = Radar(params, low1.clip(lower=0).tolist(), high1.tolist(),
-                    lower_is_better=['Miscontrol'],  # Ajusta si 'Miscontrol' es relevante
-                    round_int=[False]*len(params),
-                    num_rings=4,  # el número de anillos
-                    ring_width=1, center_circle_radius=1)
-        return jugadores, equipos, jugadores_valores, low1.clip(lower=0).tolist(), high1.tolist(), params, radar
-
-def extraer_nombre_jugador(descripcion):
-        """
-        Extrae el nombre del jugador de una descripción y limpia los asteriscos y otros símbolos innecesarios.
-        """
-        # Eliminar asteriscos y posibles espacios extra antes y después del nombre
-        nombre_limpio = re.sub(r'^\*+|\*+$', '', descripcion.split(":")[0]).strip()
-        return nombre_limpio
-
-def radar_chart_comparativo(jugador_1, jugador_2, radar, jugadores_valores, jugadores, equipos, df,
-                                color_jugador_1='#01c49d', color_jugador_2='#d80499',
-                                fontsize_labels=20, figheight=12):
-        """
-        Genera un radar comparativo entre dos jugadores.
-        """
-        try:
-            # Verificar existencia de jugadores en la lista de jugadores
-            if jugador_1 not in jugadores or jugador_2 not in jugadores:
-                raise ValueError(f"Uno o ambos jugadores no están en la lista de jugadores.")
-            
-            # Valores de los jugadores
-            jugador_1_valores = jugadores_valores[jugador_1]
-            jugador_2_valores = jugadores_valores[jugador_2]
-            
-        
-            # Verificar si las longitudes coinciden
-            if len(jugador_1_valores) != len(jugador_2_valores):
-                raise ValueError(f"Los jugadores no tienen la misma cantidad de valores. "
-                                f"{jugador_1} tiene {len(jugador_1_valores)} valores, "
-                                f"{jugador_2} tiene {len(jugador_2_valores)} valores.")
-        
-            # Obtener los índices de los jugadores en la lista de jugadores
-            index_jugador_1 = jugadores.index(jugador_1)
-            index_jugador_2 = jugadores.index(jugador_2)
-            
-            # Obtener los equipos de los jugadores desde la lista 'equipos'
-            equipo_jugador_1 = equipos[index_jugador_1]
-            equipo_jugador_2 = equipos[index_jugador_2]
-            
-        
-            # Crear figura
-            fig, axs = grid(figheight=figheight, grid_height=0.915, title_height=0.06,
-                            endnote_height=0.025, title_space=0, endnote_space=0,
-                            grid_key='radar', axis=False)
-            
-            # Configurar radar
-            radar.setup_axis(ax=axs['radar'], facecolor='None')
-            radar.draw_circles(ax=axs['radar'], facecolor='#28252c', edgecolor='#39353f', lw=1.5)
-            
-            # Dibujar radar comparativo
-            radar_output = radar.draw_radar_compare(
-                jugador_1_valores, jugador_2_valores, ax=axs['radar'],
-                kwargs_radar={'facecolor': color_jugador_1, 'alpha': 0.6},
-                kwargs_compare={'facecolor': color_jugador_2, 'alpha': 0.6}
-            )
-            radar_poly, radar_poly2, vertices1, vertices2 = radar_output
-            
-            # Etiquetas y rangos
-            radar.draw_range_labels(ax=axs['radar'], fontsize=fontsize_labels, color='#fcfcfc')
-            radar.draw_param_labels(ax=axs['radar'], fontsize=fontsize_labels, color='#fcfcfc')
-            
-            # Puntos en los vértices
-            axs['radar'].scatter(vertices1[:, 0], vertices1[:, 1],
-                                c=color_jugador_1, edgecolors='#6d6c6d', marker='o', s=150, zorder=2)
-            axs['radar'].scatter(vertices2[:, 0], vertices2[:, 1],
-                                c=color_jugador_2, edgecolors='#6d6c6d', marker='o', s=150, zorder=2)
-            
-            # Títulos
-            axs['title'].text(0.01, 0.65, jugador_1, fontsize=25, color=color_jugador_1, ha='left', va='center')
-            axs['title'].text(0.01, 0.30, equipo_jugador_1, fontsize=15, color=color_jugador_1, ha='left', va='center')
-            axs['title'].text(0.99, 0.65, jugador_2, fontsize=25, color=color_jugador_2, ha='right', va='center')
-            axs['title'].text(0.99, 0.30, equipo_jugador_2, fontsize=15, color=color_jugador_2, ha='right', va='center')
-            fig.set_facecolor('#323232')
-            return fig
-        except Exception as e:
-            print(f"Error al generar el radar: {e}")
-            return None
-
-def generar_radares_automaticos(jugador_principal, jugadores_similares_info, radar, jugadores_valores, jugadores, equipos, df,
-                                    color_principal='#01c49d', color_similar='#d80499', 
-                                    fontsize_labels=20, figheight=12):
-        """
-        Genera automáticamente radares comparativos entre el jugador principal y cada jugador en jugadores_similares_info.
-        Almacena los radares generados en una lista para acceso posterior.
-        """
-        radares_generados = []  # Lista para guardar las figuras generadas
-        
-        # Limpiar los nombres de los jugadores similares
-        jugadores_similares_limpios = [extraer_nombre_jugador(desc) for desc in jugadores_similares_info]
-            
-        # Iterar sobre los jugadores similares
-        for jugador_similar_desc in jugadores_similares_info:
-            jugador_similar = extraer_nombre_jugador(jugador_similar_desc)
-            
-            if jugador_similar not in jugadores:
-                print(f"Jugador similar '{jugador_similar}' no está en la lista de jugadores.")
-                continue
-            
-            print(f"Generando radar para: {jugador_principal} vs {jugador_similar}")
-            
-            # Crear radar comparativo
-            fig = radar_chart_comparativo(
-                jugador_1=jugador_principal, 
-                jugador_2=jugador_similar, 
-                radar=radar, 
-                jugadores_valores=jugadores_valores, 
-                jugadores=jugadores, 
-                equipos=equipos, 
-                df=df,
-                color_jugador_1=color_principal, 
-                color_jugador_2=color_similar, 
-                fontsize_labels=fontsize_labels, 
-                figheight=figheight
-            )
-            
-            if fig is not None:
-                # Guardar la figura en la lista de radares generados
-                radares_generados.append(fig)
-            else:
-                print(f"No se pudo generar el radar para {jugador_principal} vs {jugador_similar}")
-            
-        
-        return radares_generados
-
+ 
 
 def generar_pdf(link):
     player_info = extract_player_info(link)
-    player_info= get_player_with_stats(player_info['Report_URL_liga_argentina'])
     pdf = PDF(player_name=player_info['Player'])
     pdf.add_page()
 
@@ -1200,49 +871,72 @@ def generar_pdf(link):
     except Exception as e:
         print(f"Error al procesar la imagen: {e}")
 
+    df_general_jugadores_final= all_stats_player(stat= ['stats','shooting','misc','playingtime'], league= 'Primera Division Argentina', season= '2025',add_page_name=True)
+    df_jugadores_final= df_jugadores_interes(df_general_jugadores_final)
+    df_jugadores_final= transformacion_90(df_jugadores_final)
+    
+
+    df_media_columnas_jugadores = creacion_valores_liga(df_jugadores_final)
+    values_liga_jugadores = df_media_columnas_jugadores['Media'].to_list()
+    values_liga = pd.to_numeric(values_liga_jugadores, errors="coerce")
+    player_info['Valores_media_liga']= df_media_columnas_jugadores
+    
+    
+    minutos_totales= int(df_jugadores_final['Partidos jugados'].max())*90
+
+    player_info['Minutos totales jugados liga']= minutos_totales
+
+    fila_jugador= obtener_df_jugador_interes(player_info)
+    print(fila_jugador)
+    
+    def extraer_metricas_jugador(player_info):
+
+        columnas_interes_jugadores= [ 'Partidos jugados',    'Alineaciones','Goles/90', 'Asistencias/90','Goles + Asistencias sin penalizacion/90', 'Tiros totales/90', 'Tiros a puerta/90',
+                                    'Goles/tiros','Derribos conseguidos/90', 
+                                    'Intercepciones/90']
+        # Crear un DataFrame en el formato deseado
+        tabla_metricas90 = pd.DataFrame({
+                "Estadística": columnas_interes_jugadores,
+                "Por 90": fila_jugador.loc[:, columnas_interes_jugadores].values.flatten()})
+
+        player_info['Tabla metricas']= tabla_metricas90
+        return player_info
+    
+    player_info= extraer_metricas_jugador(player_info)
+    params, values_jugador= extraer_variables_radar(player_info)
+    print(params)
+    print(values_jugador)
+    print(values_liga)
     #EJECUTAR PROMPT CON IA
     
-    resumen_info ,fortalezas_info , debilidades_info, potencial_info,jugadores_similares_info= generar_y_procesar_informe(player_info)
-    print(resumen_info)
-    print(fortalezas_info)
-    print(debilidades_info)
-    print(potencial_info)
-    print(jugadores_similares_info)
+    resumen_info ,fortalezas_info , debilidades_info, potencial_info= generar_y_procesar_informe(player_info)
+    
+
     # Resumen (centrado)
     pdf.ln(1)
     pdf.set_font("Arial", "B", 14)
     pdf.set_text_color(255, 255, 255)  # Texto en blanco
-    pdf.cell(0, 10, "RESUMEN:", ln=True, align="C")  # Centrando el título de Resumen
+    pdf.cell(0, 10, limpiar_texto("RESUMEN:"), ln=True, align="C")  # Centrando el título de Resumen
     pdf.set_font("Arial", "", 12)
-    pdf.multi_cell(0, 8, resumen_info)
+    pdf.multi_cell(0, 8,limpiar_texto(resumen_info))
     pdf.ln(3)
 
-    # Generar el gráfico de radar
-    values_liga= obtener_valores_liga (player_info, especifico_a_general,df_valores_jugadores_delanteros, df_valores_jugadores_centrocampistas, df_valores_jugadores_defensas, df_valores_gk )
-    player_info = filtrar_metricas_por_rol(player_info, params_por_rol)
-    
+    min_range, max_range= rangos_radar_pizza(values_jugador, values_liga_jugadores, params)
 
-    # Verificar el resultado
-    values_jugador= player_info['metricas_radar']['Per 90']
-    values_jugador = values_jugador.tolist()
-    params1= player_info['metricas_radar']['Statistic'].tolist()
-
-
-    min_range, max_range= rangos_radar_pizza(values_jugador,values_liga,params1)
-    radar_img_path = generar_radar_pizza( player_info=player_info, temporada="2024-25", params=params1, min_range=min_range, max_range=max_range,
+    radar_img_path = generar_radar_pizza( player_info=player_info, temporada="2024-25", params=params, min_range=min_range, max_range=max_range,
                             values_jugador=values_jugador,  values_liga=values_liga)
     
     # Agregar el gráfico de radar al PDF
     pdf.chapter_title("ESTADÍSTICAS 90s RESPECTO A LA LIGA PROFESIONAL ARGENTINA")
     pdf.image(radar_img_path, x=43, y=pdf.get_y(), w=135)  # Ajustar la posición y tamaño según sea necesario# Agregar el gráfico de radar pizza
     pdf.ln(5)
-
+    
     pdf.add_page()
     # Fortalezas - Color verde
     pdf.ln(1)
     pdf.set_font("Arial", "B", 14)
     pdf.set_text_color(0, 128, 0)  # Verde
-    pdf.cell(200, 10, "FORTALEZAS:", ln=True)
+    pdf.cell(200, 10, limpiar_texto("FORTALEZAS:"), ln=True)
     pdf.set_font("Arial", "", 12)
     pdf.set_text_color(255, 255, 255)  # Texto de fortalezas en blanco
     
@@ -1260,13 +954,13 @@ def generar_pdf(link):
             # Descripción en formato normal
             pdf.set_font("Arial", "", 10)  # Normal para la descripción
             pdf.set_x(13)  # Mueve el cursor 15 unidades hacia la derecha
-            pdf.multi_cell(0, 8, descripcion)  # Mostrar la descripción en formato normal
+            pdf.multi_cell(0, 8, limpiar_texto(descripcion))  # Mostrar la descripción en formato normal
 
     # Debilidades - Color rojo
     pdf.ln(1)
     pdf.set_font("Arial", "B", 14)
     pdf.set_text_color(255, 0, 0)  # Rojo
-    pdf.cell(200, 10, "DEBILIDADES:", ln=True)
+    pdf.cell(200, 10,limpiar_texto("DEBILIDADES:") , ln=True)
     pdf.set_font("Arial", "", 12)
     pdf.set_text_color(255, 255, 255)  # Texto de debilidades en blanco
     
@@ -1284,96 +978,17 @@ def generar_pdf(link):
             # Descripción en formato normal
             pdf.set_font("Arial", "", 10)  # Normal para la descripción
             pdf.set_x(13)  # Mueve el cursor 15 unidades hacia la derecha
-            pdf.multi_cell(0, 8, descripcion)  # Mostrar la descripción en formato normal
+            pdf.multi_cell(0, 8, limpiar_texto(descripcion))  # Mostrar la descripción en formato normal
 
     # Potencial (centrado) - Color dorado
-    pdf.ln(2)
+    pdf.ln(0.5)
     pdf.set_font("Arial", "B", 14)
     pdf.set_text_color(218, 165, 32)  # Dorado
-    pdf.cell(0, 10, "POTENCIAL:", ln=True, align="C")  # Centrando el título de Potencial
+    pdf.cell(0, 10, limpiar_texto("POTENCIAL:"), ln=True, align="C")  # Centrando el título de Potencial
     pdf.set_font("Arial", "", 10)
     pdf.set_text_color(255, 255, 255)  # Texto del potencial en blanco
     pdf.set_x(13)  # Mueve el cursor 15 unidades hacia la derecha
     pdf.multi_cell(0, 8, potencial_info)
-
-    pdf.add_page()
-    # Jugadores Similares - Mantener texto en blanco
-    pdf.ln(3)
-    pdf.set_font("Arial", "B", 14)
-    pdf.set_text_color(255, 255, 255)  # Texto en blanco
-    pdf.cell(200, 10, "JUGADORES SIMILARES:", ln=True, align="C")
-    pdf.set_font("Arial", "", 12)
-
-    # Aquí se aplica el formato correcto de la lista para jugadores similares
-    for item in jugadores_similares_info:
-        if ":" in item:
-            nombre, descripcion = item.split(":", 1)
-            nombre = nombre.strip().replace("**", "")
-            descripcion = descripcion.strip()
-
-            # Lista con nombre en negrita y descripción normal
-            pdf.set_font("Arial", "B", 10)  # Negrita para el nombre
-            pdf.multi_cell(0, 8, f"- {nombre}:")  # Mostrar el nombre en negrita con un guion delante
-
-            # Descripción en formato normal
-            pdf.set_font("Arial", "", 10)  # Normal para la descripción
-            pdf.set_x(13)  # Mueve el cursor 15 unidades hacia la derecha
-            pdf.multi_cell(0, 8, descripcion)  # Mostrar la descripción en formato normal
-    
-   # Ejecutar el flujo completo
-    df_final = flujo_completo(liga="Primera Division Argentina", año="2024", jugadores_similares_info=jugadores_similares_info,   
-                            jugador_principal=player_info['Player'], player_data=player_info)
-   # Llamada a la función para configurar jugadores y valores
-    jugadores, equipos, jugadores_valores, low1, high1, params, radar = configurar_jugadores_y_valores(df_final, columnas_valores_inicio=3, player_data=player_info)
-
-
-    radares_generados = generar_radares_automaticos(jugador_principal=player_info['Player'], jugadores_similares_info=jugadores_similares_info,
-    radar=radar, jugadores_valores=jugadores_valores, jugadores=jugadores, equipos=equipos, df=df_final)
-
-    pdf.add_page()
-    pdf.chapter_title2("COMPARATIVA JUGADORES SIMILARES-LIGA PROFESIONAL ARGENTINA")  
-    # Dimensiones para las imágenes y espacio entre ellas
-    col_width = 90  # Ancho de cada columna
-    row_height = 40  # Altura de cada fila
-    x_start_left = 10  # Posición x para la columna izquierda
-    x_start_right = 110  # Posición x para la columna derecha
-    y_margin = 3  # Margen inicial en y
-    max_columns = 2  # Número máximo de columnas por fila
-
-    # Variables para controlar posición
-    x_positions = [x_start_left, x_start_right]  # Columnas: izquierda y derecha
-    y_position = pdf.get_y() + y_margin  # Comienza desde la posición actual del PDF
-
-    # Iterar sobre cada radar generado
-    for i, radar_fig in enumerate(radares_generados):
-        if radar_fig is None:
-            print(f"Error: El radar no es válido.")
-            continue
-
-        # Crear un archivo temporal para cada imagen de radar
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
-            # Guardar la figura como una imagen en formato PNG en el archivo temporal
-            radar_fig.savefig(temp_file, format='PNG', bbox_inches='tight')
-            temp_file_path = temp_file.name  # Obtiene la ruta del archivo temporal
-
-        # Determinar columna y fila
-        col_index = i % max_columns  # Índice de columna (0 = izquierda, 1 = derecha)
-        x_position = x_positions[col_index]  # Posición x basada en la columna
-
-        # Si es una nueva fila (primer radar de la fila), ajusta la posición y
-        if col_index == 0 and i > 0:
-            y_position += row_height + 25  # Incrementa la posición y (espaciado entre filas)
-
-        # Agregar la imagen al PDF
-        pdf.image(temp_file_path, x=x_position, y=y_position, w=col_width)
-
-        # Si hemos llenado una fila (ya tenemos 2 imágenes), aumenta la posición Y para la siguiente fila
-        if col_index == 1:  # Si ya hemos añadido una imagen en la columna derecha
-            y_position += row_height   # Incrementa la posición y para la siguiente fila
-
-        # Salto final de línea si es necesario
-    pdf.ln(y_position + row_height)
-    
 
     # Guardar el PDF final
     filename = f"assets/smart_report_{player_info['Player']}.pdf"
