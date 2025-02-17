@@ -5,8 +5,6 @@ seaborn
 scipy
 tabulate
 beautifulsoup4
-
-urllib==5.5 
 datetime==5.5
 fpdf==1.7.2
 mplsoccer==1.4.0
