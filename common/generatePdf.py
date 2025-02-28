@@ -542,6 +542,8 @@ def transformacion_90(df):
     # Asegúrate de que no haya valores nulos o ceros en 'Minutos jugados/90' para evitar divisiones por cero
     df["Derribos conseguidos/90"] = df["Derribos conseguidos"] / df["Minutos jugados/90"]
     df["Intercepciones/90"] = df["Intercepciones"] / df["Minutos jugados/90"]
+    df["Intercepciones/90"] = df["Intercepciones/90"].replace([np.inf, -np.inf], np.nan)
+    df["Intercepciones/90"] = df["Intercepciones/90"].fillna(0) 
 
     df["Derribos conseguidos/90"] = df["Derribos conseguidos/90"].round(2)
     df["Intercepciones/90"] = df["Intercepciones/90"].round(2)
